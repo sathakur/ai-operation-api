@@ -4,8 +4,10 @@ using Microsoft.Identity.Web;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"))
+builder.Services.AddAuthentication(
+        JwtBearerDefaults.AuthenticationScheme)
+    .AddMicrosoftIdentityWebApi(
+        builder.Configuration.GetSection("AzureAd"))
     .EnableTokenAcquisitionToCallDownstreamApi()
     .AddInMemoryTokenCaches();
 
@@ -16,6 +18,7 @@ builder.Services.AddHttpClient();
 builder.Services.AddScoped<AzureInventoryService>();
 builder.Services.AddScoped<FunctionInventoryService>();
 builder.Services.AddScoped<AzureAgentToolService>();
+builder.Services.AddScoped<ChatPresentationBuilder>();
 builder.Services.AddScoped<FoundryAgentService>();
 
 var allowedOrigins =

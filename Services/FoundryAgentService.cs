@@ -13,17 +13,20 @@ public class FoundryAgentService
     private readonly IConfiguration _configuration;
     private readonly ILogger<FoundryAgentService> _logger;
     private readonly AzureAgentToolService _toolService;
+    private readonly ChatPresentationBuilder _presentationBuilder;
 
     private const int MaxToolRounds = 6;
 
     public FoundryAgentService(
         IConfiguration configuration,
         ILogger<FoundryAgentService> logger,
-        AzureAgentToolService toolService)
+        AzureAgentToolService toolService,
+        ChatPresentationBuilder presentationBuilder)
     {
         _configuration = configuration;
         _logger = logger;
         _toolService = toolService;
+        _presentationBuilder = presentationBuilder;
     }
 
     public async Task<ChatResponse> RunAsync(
@@ -67,18 +70,6 @@ public class FoundryAgentService
                 endpoint: new Uri(projectEndpoint),
                 tokenProvider: credential);
 
-        /*
-         * IMPORTANT:
-         *
-         * Function tools are declared on the persisted Foundry Agent version.
-         * Do NOT add options.Tools here.
-         *
-         * Foundry returns FunctionCallResponseItem objects when a tool is needed.
-         * The ASP.NET backend executes only the approved tool implementation and
-         * returns the output by call ID.
-         *
-         * The model never receives ARM tokens or the Function key.
-         */
         var agentReference =
             new AgentReference(
                 name: agentName,
@@ -106,12 +97,18 @@ public class FoundryAgentService
         string? previousResponseId = null;
         ResponseResult? finalResponse = null;
 
+        // Capture the latest successful inventory tool result.
+        // This is later converted into the fixed presentation contract.
+        string? lastSuccessfulToolName = null;
+        string? lastSuccessfulToolOutput = null;
+
         for (var round = 1; round <= MaxToolRounds; round++)
         {
             var options =
                 new CreateResponseOptions
                 {
-                    PreviousResponseId = previousResponseId
+                    PreviousResponseId =
+                        previousResponseId
                 };
 
             foreach (var item in inputItems)
@@ -119,10 +116,8 @@ public class FoundryAgentService
                 options.InputItems.Add(item);
             }
 
-            /*
-             * DO NOT ADD options.Tools.
-             * The stored Foundry Agent version owns the tool definitions.
-             */
+            // Do NOT add options.Tools.
+            // Tool definitions are owned by the persisted Foundry Agent version.
 
             var result =
                 await responsesClient.CreateResponseAsync(
@@ -145,10 +140,6 @@ public class FoundryAgentService
 
             foreach (var responseItem in response.OutputItems)
             {
-                /*
-                 * Preserve the response item in the continuation request.
-                 * This keeps the function-call context and call ID.
-                 */
                 inputItems.Add(responseItem);
 
                 if (responseItem is not FunctionCallResponseItem functionCall)
@@ -166,6 +157,7 @@ public class FoundryAgentService
                     round);
 
                 string toolOutput;
+                var toolSucceeded = false;
 
                 try
                 {
@@ -173,6 +165,8 @@ public class FoundryAgentService
                         await _toolService.ExecuteAsync(
                             functionCall.FunctionName,
                             cancellationToken);
+
+                    toolSucceeded = true;
                 }
                 catch (Exception ex)
                 {
@@ -182,9 +176,6 @@ public class FoundryAgentService
                         functionCall.FunctionName,
                         correlationId);
 
-                    /*
-                     * Never convert retrieval failure into an empty inventory.
-                     */
                     toolOutput =
                         """
                         {
@@ -192,6 +183,15 @@ public class FoundryAgentService
                           "instruction": "Do not infer that the count is zero and do not claim that no Azure resources exist."
                         }
                         """;
+                }
+
+                if (toolSucceeded)
+                {
+                    lastSuccessfulToolName =
+                        functionCall.FunctionName;
+
+                    lastSuccessfulToolOutput =
+                        toolOutput;
                 }
 
                 inputItems.Add(
@@ -212,10 +212,6 @@ public class FoundryAgentService
                 "Foundry returned no response.");
         }
 
-        /*
-         * If MaxToolRounds is reached while the model is still asking for
-         * functions, fail explicitly instead of returning fabricated text.
-         */
         var unresolvedCalls =
             finalResponse.OutputItems
                 .OfType<FunctionCallResponseItem>()
@@ -227,8 +223,31 @@ public class FoundryAgentService
                 $"Foundry exceeded the maximum tool-call rounds ({MaxToolRounds}).");
         }
 
-        var answer =
+        var foundryAnswer =
             finalResponse.GetOutputText();
+
+        var presentation =
+            _presentationBuilder.Build(
+                lastSuccessfulToolName,
+                lastSuccessfulToolOutput);
+
+        /*
+         * Important:
+         * For structured inventory responses, use the deterministic summary
+         * generated from the actual tool data instead of displaying a second
+         * free-form Markdown/list/table produced by the model.
+         *
+         * Foundry still decides which approved tool to call.
+         * Azure data and displayed counts come from the tool result.
+         */
+        var answer =
+            presentation?.Summary;
+
+        if (string.IsNullOrWhiteSpace(answer))
+        {
+            answer =
+                foundryAnswer;
+        }
 
         if (string.IsNullOrWhiteSpace(answer))
         {
@@ -239,6 +258,7 @@ public class FoundryAgentService
         return new ChatResponse
         {
             Answer = answer,
+            Presentation = presentation,
             CorrelationId = correlationId,
             User = username,
             AgentName = agentName,
