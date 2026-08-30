@@ -39,7 +39,7 @@ public class FoundryAgentService
             _configuration["Foundry:AgentName"];
 
         var agentVersion =
-            _configuration["Foundry:AgentVersion"] ?? "";
+            _configuration["Foundry:AgentVersion"];
 
         if (string.IsNullOrWhiteSpace(projectEndpoint))
         {
@@ -53,6 +53,12 @@ public class FoundryAgentService
                 "Foundry:AgentName is not configured.");
         }
 
+        if (string.IsNullOrWhiteSpace(agentVersion))
+        {
+            throw new InvalidOperationException(
+                "Foundry:AgentVersion is not configured.");
+        }
+
         var credential =
             new DefaultAzureCredential();
 
@@ -62,81 +68,102 @@ public class FoundryAgentService
                 tokenProvider: credential);
 
         /*
-         * We intentionally do not give the model:
-         * - ARM tokens
-         * - Function keys
-         * - arbitrary KQL
-         * - arbitrary PowerShell / CLI execution
+         * IMPORTANT:
          *
-         * Foundry can only request one of the strongly-typed tools below.
-         * The ASP.NET backend executes the tool and returns only its result.
+         * Function tools are declared on the persisted Foundry Agent version.
+         * Do NOT add options.Tools here.
+         *
+         * Foundry returns FunctionCallResponseItem objects when a tool is needed.
+         * The ASP.NET backend executes only the approved tool implementation and
+         * returns the output by call ID.
+         *
+         * The model never receives ARM tokens or the Function key.
          */
+        var agentReference =
+            new AgentReference(
+                name: agentName,
+                version: agentVersion);
+
         var responsesClient =
             projectClient
                 .ProjectOpenAIClient
                 .GetProjectResponsesClientForAgent(
-                    defaultAgent: agentName);
+                    agentReference);
 
         _logger.LogInformation(
-            "Calling Foundry agent. CorrelationId={CorrelationId}, Agent={AgentName}, ConfiguredVersion={AgentVersion}, User={User}",
+            "Calling Foundry agent. CorrelationId={CorrelationId}, Agent={AgentName}, Version={AgentVersion}, User={User}",
             correlationId,
             agentName,
             agentVersion,
             username);
 
-        var tools = CreateInventoryTools();
+        var inputItems =
+            new List<ResponseItem>
+            {
+                ResponseItem.CreateUserMessageItem(message)
+            };
 
-        List<ResponseItem> inputItems =
-        [
-            ResponseItem.CreateUserMessageItem(message)
-        ];
-
+        string? previousResponseId = null;
         ResponseResult? finalResponse = null;
 
         for (var round = 1; round <= MaxToolRounds; round++)
         {
-            var options = new CreateResponseOptions();
+            var options =
+                new CreateResponseOptions
+                {
+                    PreviousResponseId = previousResponseId
+                };
 
             foreach (var item in inputItems)
             {
                 options.InputItems.Add(item);
             }
 
-            foreach (var tool in tools)
-            {
-                options.Tools.Add(tool);
-            }
+            /*
+             * DO NOT ADD options.Tools.
+             * The stored Foundry Agent version owns the tool definitions.
+             */
 
             var result =
                 await responsesClient.CreateResponseAsync(
                     options,
                     cancellationToken);
 
-            var response = result.Value;
-            finalResponse = response;
+            var response =
+                result.Value;
 
-            var toolCalls =
-                response.OutputItems
-                    .OfType<FunctionCallResponseItem>()
-                    .ToList();
+            finalResponse =
+                response;
 
-            if (toolCalls.Count == 0)
+            previousResponseId =
+                response.Id;
+
+            inputItems.Clear();
+
+            var functionCalled =
+                false;
+
+            foreach (var responseItem in response.OutputItems)
             {
-                break;
-            }
+                /*
+                 * Preserve the response item in the continuation request.
+                 * This keeps the function-call context and call ID.
+                 */
+                inputItems.Add(responseItem);
 
-            /*
-             * Add all model output items back to the next request so the
-             * function-call items and their call IDs remain in context.
-             */
-            inputItems.AddRange(response.OutputItems);
+                if (responseItem is not FunctionCallResponseItem functionCall)
+                {
+                    continue;
+                }
 
-            foreach (var toolCall in toolCalls)
-            {
+                functionCalled =
+                    true;
+
                 _logger.LogInformation(
-                    "Foundry requested tool {ToolName}. CorrelationId={CorrelationId}",
-                    toolCall.FunctionName,
-                    correlationId);
+                    "Foundry requested inventory tool {ToolName}. CorrelationId={CorrelationId}, Round={Round}",
+                    functionCall.FunctionName,
+                    correlationId,
+                    round);
 
                 string toolOutput;
 
@@ -144,7 +171,7 @@ public class FoundryAgentService
                 {
                     toolOutput =
                         await _toolService.ExecuteAsync(
-                            toolCall.FunctionName,
+                            functionCall.FunctionName,
                             cancellationToken);
                 }
                 catch (Exception ex)
@@ -152,25 +179,30 @@ public class FoundryAgentService
                     _logger.LogError(
                         ex,
                         "Inventory tool {ToolName} failed. CorrelationId={CorrelationId}",
-                        toolCall.FunctionName,
+                        functionCall.FunctionName,
                         correlationId);
 
                     /*
-                     * Return an explicit tool error to the model.
-                     * Do not turn a retrieval failure into "zero resources".
+                     * Never convert retrieval failure into an empty inventory.
                      */
                     toolOutput =
                         """
                         {
-                          "error": "Inventory retrieval failed. Do not infer that the resource count is zero and do not claim that no resources exist."
+                          "error": "Inventory retrieval failed.",
+                          "instruction": "Do not infer that the count is zero and do not claim that no Azure resources exist."
                         }
                         """;
                 }
 
                 inputItems.Add(
                     ResponseItem.CreateFunctionCallOutputItem(
-                        toolCall.CallId,
+                        functionCall.CallId,
                         toolOutput));
+            }
+
+            if (!functionCalled)
+            {
+                break;
             }
         }
 
@@ -180,13 +212,28 @@ public class FoundryAgentService
                 "Foundry returned no response.");
         }
 
+        /*
+         * If MaxToolRounds is reached while the model is still asking for
+         * functions, fail explicitly instead of returning fabricated text.
+         */
+        var unresolvedCalls =
+            finalResponse.OutputItems
+                .OfType<FunctionCallResponseItem>()
+                .Any();
+
+        if (unresolvedCalls)
+        {
+            throw new InvalidOperationException(
+                $"Foundry exceeded the maximum tool-call rounds ({MaxToolRounds}).");
+        }
+
         var answer =
             finalResponse.GetOutputText();
 
         if (string.IsNullOrWhiteSpace(answer))
         {
             answer =
-                "I could not produce a final answer from the inventory data.";
+                "I could not produce a final answer from the Azure inventory data.";
         }
 
         return new ChatResponse
@@ -197,72 +244,6 @@ public class FoundryAgentService
             AgentName = agentName,
             AgentVersion = agentVersion
         };
-    }
-
-    private static IReadOnlyList<ResponseTool> CreateInventoryTools()
-    {
-        /*
-         * These tools intentionally accept no arbitrary query text.
-         * Each name maps to a fixed, approved backend operation.
-         */
-
-        return
-        [
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_subscriptions",
-                functionDescription:
-                    "Return the Azure subscriptions visible to the central inventory service. Use this for subscription names, subscription IDs, subscription count, or subscription state.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true),
-
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_vms",
-                functionDescription:
-                    "Return Azure virtual machine inventory. Use this when the user asks for VM names, VM details, VM locations, resource groups, sizes, operating systems, power state, or IP information.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true),
-
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_vm_count",
-                functionDescription:
-                    "Return the total count of Azure virtual machines visible to the central inventory service. Prefer this tool when the user asks only for the total VM count.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true),
-
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_resource_groups",
-                functionDescription:
-                    "Return Azure resource groups visible to the central inventory service.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true),
-
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_resource_summary",
-                functionDescription:
-                    "Return resource counts grouped by Azure resource type. Use this for inventory summaries and questions such as how many resources of each type exist.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true),
-
-            ResponseTool.CreateFunctionTool(
-                functionName: "get_subnets",
-                functionDescription:
-                    "Return Azure subnet inventory visible to the central inventory service.",
-                functionParameters: EmptyObjectSchema(),
-                strictModeEnabled: true)
-        ];
-    }
-
-    private static BinaryData EmptyObjectSchema()
-    {
-        return BinaryData.FromString(
-            """
-            {
-              "type": "object",
-              "properties": {},
-              "required": [],
-              "additionalProperties": false
-            }
-            """);
     }
 }
 
