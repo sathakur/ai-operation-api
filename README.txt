@@ -1,16 +1,35 @@
-Replace these files in the backend repo:
+AI Operation API -> Function Inventory Integration
+================================================
 
-AIInventory.Api.csproj
-Services/FoundryAgentService.cs
-Services/AzureAgentToolService.cs
+Files
+-----
+Program.cs
+Services/FunctionInventoryService.cs
+Controllers/CentralInventoryController.cs
 
-Why:
-1. Removes Microsoft.Agents.AI.Foundry preview package and AgentReference dependency.
-2. Uses the current Azure AI Projects + ProjectOpenAIClient prompt-agent invocation pattern.
-3. Uses DefaultAzureCredential so App Service managed identity is used in Azure.
-4. Updates AzureAgentToolService to match the repository's actual AzureInventoryService methods:
-   GetSubscriptionsAsync(CancellationToken)
-   GetVirtualMachinesAsync(CancellationToken)
-5. VM count is calculated from GetVirtualMachinesAsync.
+Do NOT add the Function key to source code or GitHub.
 
-No change is required to AzureInventoryService.cs for this build fix.
+Azure App Service settings
+--------------------------
+FunctionInventory__BaseUrl=https://func-ai-operation-inventory-c0btabdee8g0bge7.westeurope-01.azurewebsites.net
+FunctionInventory__Key=<YOUR_FUNCTION_KEY>
+
+BaseUrl must NOT contain /api/inventory and must NOT contain ?code=...
+
+Backend test endpoints after deployment
+---------------------------------------
+GET /api/central-inventory/subscriptions
+GET /api/central-inventory/vms
+GET /api/central-inventory/resource-groups
+GET /api/central-inventory/summary
+GET /api/central-inventory/subnets
+GET /api/central-inventory/resources
+
+These endpoints remain protected by:
+[Authorize]
+[RequiredScope("Inventory.Read")]
+
+Architecture
+------------
+Frontend -> Entra token -> App Service API -> x-functions-key ->
+Inventory Function -> Function Managed Identity -> Azure Resource Graph
