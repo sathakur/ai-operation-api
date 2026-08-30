@@ -78,7 +78,7 @@ public class AzureAgentToolService
         {
             foreach (var row in data.EnumerateArray())
             {
-                if (!row.TryGetProperty("count", out var c))
+                if (!row.TryGetProperty("resourceCount", out var c))
                     continue;
 
                 if (c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out var n))
