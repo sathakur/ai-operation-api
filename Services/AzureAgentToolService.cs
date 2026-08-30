@@ -17,7 +17,7 @@ public class AzureAgentToolService
 
     public async Task<string> ExecuteAsync(
         string toolName,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         _logger.LogInformation(
             "Executing approved inventory tool {ToolName}.",
@@ -25,102 +25,80 @@ public class AzureAgentToolService
 
         return toolName switch
         {
-            "get_subscriptions" =>
-                await GetSubscriptionsAsync(cancellationToken),
-
-            "get_vms" =>
-                await GetVmsAsync(cancellationToken),
-
-            "get_vm_count" =>
-                await GetVmCountAsync(cancellationToken),
-
-            "get_resource_groups" =>
-                await GetResourceGroupsAsync(cancellationToken),
-
-            "get_resource_summary" =>
-                await GetResourceSummaryAsync(cancellationToken),
-
-            "get_subnets" =>
-                await GetSubnetsAsync(cancellationToken),
-
+            "get_subscriptions" => await GetSubscriptionsAsync(ct),
+            "get_vms" => await GetVmsAsync(ct),
+            "get_vm_count" => await GetVmCountAsync(ct),
+            "get_resource_groups" => await GetResourceGroupsAsync(ct),
+            "get_resource_summary" => await GetResourceSummaryAsync(ct),
+            "get_subnets" => await GetSubnetsAsync(ct),
+            "get_resources" => await GetResourcesAsync(ct),
+            "get_storage_accounts" => await GetStorageAccountsAsync(ct),
+            "get_resource_count" => await GetResourceCountAsync(ct),
             _ => throw new InvalidOperationException(
                 $"Unsupported Foundry tool '{toolName}'.")
         };
     }
 
-    public async Task<string> GetSubscriptionsAsync(
-        CancellationToken cancellationToken = default)
-    {
-        var result =
-            await _inventoryService.GetSubscriptionsAsync(
-                cancellationToken);
+    private async Task<string> GetSubscriptionsAsync(CancellationToken ct) =>
+        (await _inventoryService.GetSubscriptionsAsync(ct)).GetRawText();
 
-        return result.GetRawText();
+    private async Task<string> GetVmsAsync(CancellationToken ct) =>
+        (await _inventoryService.GetVmsAsync(1000, ct)).GetRawText();
+
+    private async Task<string> GetResourceGroupsAsync(CancellationToken ct) =>
+        (await _inventoryService.GetResourceGroupsAsync(1000, ct)).GetRawText();
+
+    private async Task<string> GetResourceSummaryAsync(CancellationToken ct) =>
+        (await _inventoryService.GetSummaryAsync(ct)).GetRawText();
+
+    private async Task<string> GetSubnetsAsync(CancellationToken ct) =>
+        (await _inventoryService.GetSubnetsAsync(1000, ct)).GetRawText();
+
+    private async Task<string> GetResourcesAsync(CancellationToken ct) =>
+        (await _inventoryService.GetResourcesAsync(1000, null, ct)).GetRawText();
+
+    private async Task<string> GetStorageAccountsAsync(CancellationToken ct) =>
+        (await _inventoryService.GetStorageAccountsAsync(1000, ct)).GetRawText();
+
+    private async Task<string> GetVmCountAsync(CancellationToken ct)
+    {
+        var result = await _inventoryService.GetVmsAsync(2000, ct);
+        var count = GetDataArrayCount(result);
+        return JsonSerializer.Serialize(new { count });
     }
 
-    public async Task<string> GetVmsAsync(
-        CancellationToken cancellationToken = default)
+    private async Task<string> GetResourceCountAsync(CancellationToken ct)
     {
-        var result =
-            await _inventoryService.GetVmsAsync(
-                top: 1000,
-                cancellationToken);
-
-        return result.GetRawText();
-    }
-
-    public async Task<string> GetVmCountAsync(
-        CancellationToken cancellationToken = default)
-    {
-        var result =
-            await _inventoryService.GetVmsAsync(
-                top: 2000,
-                cancellationToken);
-
-        var count = 0;
+        var result = await _inventoryService.GetSummaryAsync(ct);
+        long total = 0;
 
         if (result.ValueKind == JsonValueKind.Object &&
             result.TryGetProperty("data", out var data) &&
             data.ValueKind == JsonValueKind.Array)
         {
-            count = data.GetArrayLength();
+            foreach (var row in data.EnumerateArray())
+            {
+                if (!row.TryGetProperty("count", out var c))
+                    continue;
+
+                if (c.ValueKind == JsonValueKind.Number && c.TryGetInt64(out var n))
+                    total += n;
+                else if (c.ValueKind == JsonValueKind.String &&
+                         long.TryParse(c.GetString(), out n))
+                    total += n;
+            }
         }
 
-        return JsonSerializer.Serialize(new
-        {
-            count
-        });
+        return JsonSerializer.Serialize(new { count = total });
     }
 
-    public async Task<string> GetResourceGroupsAsync(
-        CancellationToken cancellationToken = default)
+    private static int GetDataArrayCount(JsonElement result)
     {
-        var result =
-            await _inventoryService.GetResourceGroupsAsync(
-                top: 1000,
-                cancellationToken);
+        if (result.ValueKind == JsonValueKind.Object &&
+            result.TryGetProperty("data", out var data) &&
+            data.ValueKind == JsonValueKind.Array)
+            return data.GetArrayLength();
 
-        return result.GetRawText();
-    }
-
-    public async Task<string> GetResourceSummaryAsync(
-        CancellationToken cancellationToken = default)
-    {
-        var result =
-            await _inventoryService.GetSummaryAsync(
-                cancellationToken);
-
-        return result.GetRawText();
-    }
-
-    public async Task<string> GetSubnetsAsync(
-        CancellationToken cancellationToken = default)
-    {
-        var result =
-            await _inventoryService.GetSubnetsAsync(
-                top: 1000,
-                cancellationToken);
-
-        return result.GetRawText();
+        return 0;
     }
 }

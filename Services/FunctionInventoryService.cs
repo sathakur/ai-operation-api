@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text;
 using System.Text.Json;
 
@@ -20,126 +19,64 @@ public class FunctionInventoryService
         _logger = logger;
     }
 
-    public Task<JsonElement> GetSubscriptionsAsync(
-        CancellationToken cancellationToken = default)
-    {
-        return SendInventoryRequestAsync(
-            "listSubscriptions",
-            null,
-            cancellationToken);
-    }
+    public Task<JsonElement> GetSubscriptionsAsync(CancellationToken ct = default) =>
+        SendInventoryRequestAsync("listSubscriptions", null, ct);
 
-    public Task<JsonElement> GetVmsAsync(
-        int top = 1000,
-        CancellationToken cancellationToken = default)
-    {
-        var filters = new Dictionary<string, object?>
-        {
-            ["top"] = top
-        };
+    public Task<JsonElement> GetVmsAsync(int top = 1000, CancellationToken ct = default) =>
+        SendInventoryRequestAsync("listVMDetails",
+            new Dictionary<string, object?> { ["top"] = top }, ct);
 
-        return SendInventoryRequestAsync(
-            "listVMDetails",
-            filters,
-            cancellationToken);
-    }
+    public Task<JsonElement> GetResourceGroupsAsync(int top = 1000, CancellationToken ct = default) =>
+        SendInventoryRequestAsync("listResourceGroups",
+            new Dictionary<string, object?> { ["top"] = top }, ct);
 
-    public Task<JsonElement> GetResourceGroupsAsync(
-        int top = 1000,
-        CancellationToken cancellationToken = default)
-    {
-        var filters = new Dictionary<string, object?>
-        {
-            ["top"] = top
-        };
+    public Task<JsonElement> GetSummaryAsync(CancellationToken ct = default) =>
+        SendInventoryRequestAsync("summary", null, ct);
 
-        return SendInventoryRequestAsync(
-            "listResourceGroups",
-            filters,
-            cancellationToken);
-    }
-
-    public Task<JsonElement> GetSummaryAsync(
-        CancellationToken cancellationToken = default)
-    {
-        return SendInventoryRequestAsync(
-            "summary",
-            null,
-            cancellationToken);
-    }
-
-    public Task<JsonElement> GetSubnetsAsync(
-        int top = 1000,
-        CancellationToken cancellationToken = default)
-    {
-        var filters = new Dictionary<string, object?>
-        {
-            ["top"] = top
-        };
-
-        return SendInventoryRequestAsync(
-            "listSubnets",
-            filters,
-            cancellationToken);
-    }
+    public Task<JsonElement> GetSubnetsAsync(int top = 1000, CancellationToken ct = default) =>
+        SendInventoryRequestAsync("listSubnets",
+            new Dictionary<string, object?> { ["top"] = top }, ct);
 
     public Task<JsonElement> GetResourcesAsync(
         int top = 1000,
-        CancellationToken cancellationToken = default)
+        string? resourceType = null,
+        CancellationToken ct = default)
     {
-        var filters = new Dictionary<string, object?>
-        {
-            ["top"] = top
-        };
+        var filters = new Dictionary<string, object?> { ["top"] = top };
 
-        return SendInventoryRequestAsync(
-            "listResources",
-            filters,
-            cancellationToken);
+        if (!string.IsNullOrWhiteSpace(resourceType))
+            filters["resourceType"] = resourceType;
+
+        return SendInventoryRequestAsync("listResources", filters, ct);
     }
+
+    public Task<JsonElement> GetStorageAccountsAsync(
+        int top = 1000,
+        CancellationToken ct = default) =>
+        GetResourcesAsync(top, "microsoft.storage/storageaccounts", ct);
 
     private async Task<JsonElement> SendInventoryRequestAsync(
         string intent,
         Dictionary<string, object?>? filters,
-        CancellationToken cancellationToken)
+        CancellationToken ct)
     {
-        var baseUrl =
-            _configuration["FunctionInventory:BaseUrl"]?.TrimEnd('/');
-
-        var functionKey =
-            _configuration["FunctionInventory:Key"];
+        var baseUrl = _configuration["FunctionInventory:BaseUrl"]?.TrimEnd('/');
+        var functionKey = _configuration["FunctionInventory:Key"];
 
         if (string.IsNullOrWhiteSpace(baseUrl))
-        {
-            throw new InvalidOperationException(
-                "FunctionInventory:BaseUrl is not configured.");
-        }
+            throw new InvalidOperationException("FunctionInventory:BaseUrl is not configured.");
 
         if (string.IsNullOrWhiteSpace(functionKey))
-        {
-            throw new InvalidOperationException(
-                "FunctionInventory:Key is not configured.");
-        }
+            throw new InvalidOperationException("FunctionInventory:Key is not configured.");
 
-        var requestBody = new Dictionary<string, object?>
-        {
-            ["intent"] = intent
-        };
-
+        var requestBody = new Dictionary<string, object?> { ["intent"] = intent };
         if (filters is not null && filters.Count > 0)
-        {
             requestBody["filters"] = filters;
-        }
 
-        var json = JsonSerializer.Serialize(requestBody);
-
-        using var request = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"{baseUrl}/api/inventory");
-
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{baseUrl}/api/inventory");
         request.Headers.Add("x-functions-key", functionKey);
         request.Content = new StringContent(
-            json,
+            JsonSerializer.Serialize(requestBody),
             Encoding.UTF8,
             "application/json");
 
@@ -147,14 +84,12 @@ public class FunctionInventoryService
             "Calling central inventory Function for intent {Intent}.",
             intent);
 
-        using var response =
-            await _httpClient.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            ct);
 
-        var responseBody =
-            await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -169,8 +104,7 @@ public class FunctionInventoryService
                 response.StatusCode);
         }
 
-        using var document = JsonDocument.Parse(responseBody);
-
+        using var document = JsonDocument.Parse(body);
         return document.RootElement.Clone();
     }
 }
