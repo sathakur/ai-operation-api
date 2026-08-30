@@ -1,5 +1,5 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
+# Docs for Azure Web Apps Deploy:
+# https://github.com/Azure/webapps-deploy
 
 name: Build and deploy ASP.Net Core app to Azure Web App - ai-operation-api
 
@@ -35,7 +35,7 @@ jobs:
         run: dotnet build AIInventory.Api.csproj --configuration Release --no-restore
 
       - name: Publish Linux x64 app
-        run: dotnet publish AIInventory.Api.csproj -c Release -r linux-x64 --self-contained false --no-restore -o ${{ env.DOTNET_ROOT }}/myapp
+        run: dotnet publish AIInventory.Api.csproj -c Release -r linux-x64 --self-contained false -o ${{ env.DOTNET_ROOT }}/myapp
 
       - name: List published files
         run: |
