@@ -1,40 +1,80 @@
 using System.Text.Json;
+
 namespace AIInventory.Api.Services;
+
 public class AzureAgentToolService
 {
     private readonly AzureInventoryService _inventoryService;
     private readonly ILogger<AzureAgentToolService> _logger;
-    public AzureAgentToolService(AzureInventoryService inventoryService, ILogger<AzureAgentToolService> logger)
-    { _inventoryService = inventoryService; _logger = logger; }
 
-    public async Task<string> GetSubscriptionsAsync()
+    public AzureAgentToolService(
+        AzureInventoryService inventoryService,
+        ILogger<AzureAgentToolService> logger)
     {
-        _logger.LogInformation("Agent tool started: get_subscriptions");
-        var x = await _inventoryService.GetSubscriptionsAsync();
-        return JsonSerializer.Serialize(x.Select(s => new { subscriptionId=s.SubscriptionId, displayName=s.DisplayName, state=s.State }));
+        _inventoryService = inventoryService;
+        _logger = logger;
     }
-    public async Task<string> GetVmsAsync()
+
+    public async Task<string> GetSubscriptionsAsync(
+        CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Agent tool started: get_vms");
-        var x = await _inventoryService.GetVmsAsync();
-        return JsonSerializer.Serialize(x.Select(v => new { name=v.Name, subscriptionId=v.SubscriptionId, resourceGroup=v.ResourceGroup, location=v.Location, id=v.Id }));
+        _logger.LogInformation(
+            "Agent tool started: get_subscriptions");
+
+        var subscriptions =
+            await _inventoryService.GetSubscriptionsAsync(
+                cancellationToken);
+
+        var result =
+            subscriptions.Select(s => new
+            {
+                subscriptionId = s.SubscriptionId,
+                displayName = s.DisplayName,
+                state = s.State
+            });
+
+        return JsonSerializer.Serialize(result);
     }
-    public async Task<string> GetVmCountAsync()
+
+    public async Task<string> GetVmsAsync(
+        CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Agent tool started: get_vm_count");
-        var count = await _inventoryService.GetVmCountAsync();
-        return JsonSerializer.Serialize(new { count });
+        _logger.LogInformation(
+            "Agent tool started: get_vms");
+
+        var vms =
+            await _inventoryService.GetVirtualMachinesAsync(
+                cancellationToken);
+
+        var result =
+            vms.Select(vm => new
+            {
+                id = vm.Id,
+                name = vm.Name,
+                subscriptionId = vm.SubscriptionId,
+                resourceGroup = vm.ResourceGroup,
+                location = vm.Location,
+                vmSize = vm.VmSize,
+                osType = vm.OsType
+            });
+
+        return JsonSerializer.Serialize(result);
     }
-    public async Task<string> GetStorageAccountsAsync()
+
+    public async Task<string> GetVmCountAsync(
+        CancellationToken cancellationToken = default)
     {
-        _logger.LogInformation("Agent tool started: get_storage_accounts");
-        var x = await _inventoryService.GetStorageAccountsAsync();
-        return JsonSerializer.Serialize(x.Select(a => new { name=a.Name, subscriptionId=a.SubscriptionId, resourceGroup=a.ResourceGroup, location=a.Location, id=a.Id }));
-    }
-    public async Task<string> GetSqlServersAsync()
-    {
-        _logger.LogInformation("Agent tool started: get_sql_servers");
-        var x = await _inventoryService.GetSqlServersAsync();
-        return JsonSerializer.Serialize(x.Select(s => new { name=s.Name, subscriptionId=s.SubscriptionId, resourceGroup=s.ResourceGroup, location=s.Location, id=s.Id }));
+        _logger.LogInformation(
+            "Agent tool started: get_vm_count");
+
+        var vms =
+            await _inventoryService.GetVirtualMachinesAsync(
+                cancellationToken);
+
+        return JsonSerializer.Serialize(
+            new
+            {
+                count = vms.Count
+            });
     }
 }
