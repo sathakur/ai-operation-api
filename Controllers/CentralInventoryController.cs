@@ -93,8 +93,9 @@ public class CentralInventoryController : ControllerBase
 
         return await ExecuteAsync(
             () => _inventoryService.GetResourcesAsync(
-                top,
-                cancellationToken),
+                top: top,
+                resourceType: null,
+                ct: cancellationToken),
             "resources");
     }
 
